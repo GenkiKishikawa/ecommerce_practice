@@ -12,10 +12,12 @@ class Customer::WebhooksController < ApplicationController
         payload, sig_header, endpoint_secret
       )
     rescue JSON::ParserError => e
+      # Invalid payload
       p e
       status 400
       return
     rescue Stripe::SignatureVerificationError => e
+      # Invalid signature
       p e
       status 400
       return
@@ -23,18 +25,21 @@ class Customer::WebhooksController < ApplicationController
 
     case event.type
     when 'checkout.session.completed'
-      session = event.data.object
+      session = event.data.object # sessionの取得
       customer = Customer.find(session.client_reference_id)
-      return unless customer
+      return unless customer # 顧客が存在するかどうか確認
 
+      # トランザクション処理開始
       ApplicationRecord.transaction do
-        order = create_order(session)
+        order = create_order(session) # sessionを元にordersテーブルにデータを挿入
         session_with_expand = Stripe::Checkout::Session.retrieve({ id: session.id, expand: ['line_items'] })
         session_with_expand.line_items.data.each do |line_item|
-          create_order_details(order, line_item)
+          create_order_details(order, line_item) # 取り出したline_itemをorder_detailsテーブルに登録
         end
       end
-      customer.cart_items.destroy_all
+      # トランザクション処理終了
+      customer.cart_items.destroy_all # 顧客のカート内商品を全て削除
+      OrderMailer.complete(email: session.customer_details.email).deliver_later
       redirect_to session.success_url
     end
   end
@@ -44,11 +49,11 @@ class Customer::WebhooksController < ApplicationController
   def create_order(session)
     Order.create!({
                     customer_id: session.client_reference_id,
-                    name: session.shipping_details.name,
-                    postal_code: session.shipping_details.address.postal_code,
-                    prefecture: session.shipping_details.address.state,
-                    address1: session.shipping_details.address.line1,
-                    address2: session.shipping_details.address.line2,
+                    name: session.shipping.name,
+                    postal_code: session.shipping.address.postal_code,
+                    prefecture: session.shipping.address.state,
+                    address1: session.shipping.address.line1,
+                    address2: session.shipping.address.line2,
                     postage: session.shipping_options[0].shipping_amount,
                     billing_amount: session.amount_total,
                     status: 'confirm_payment'
@@ -65,6 +70,6 @@ class Customer::WebhooksController < ApplicationController
                                                  price: line_item.price.unit_amount,
                                                  quantity: line_item.quantity
                                                })
-    purchased_product.update!(stock: (purchased_product.stock - order_detail.quantity))
+    purchased_product.update!(stock: (purchased_product.stock - order_detail.quantity)) # 購入された商品の在庫数の更新
   end
 end
